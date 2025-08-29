@@ -48,3 +48,8 @@ The script will start monitoring the files listed in `targets.txt`.
 * It compares the hash of the new content with the stored hash to detect changes.
 * If a change is detected, it saves a diff log in the `js_changes` directory and sends a Discord alert.
 * It also scans all JS content for potential endpoints and logs any new discoveries in `discovered_endpoints.txt`, also triggering a Discord alert.
+
+## Updates 
+
++ Fixed code logic and indentation
++ Added realistic User-Agent 
