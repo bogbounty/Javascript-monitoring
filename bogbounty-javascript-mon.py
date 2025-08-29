@@ -11,9 +11,9 @@ import re # For endpoint discovery
 TARGET_FILE = "targets.txt"
 OUTPUT_DIR = "js_changes"
 # Your webhook URL is correctly placed here:
-WEBHOOK_URL = "" 
-CHECK_INTERVAL_SECONDS = 2600 # As per your last provided script
-USER_AGENT = "JSChangeMonitor/1.0 (BugBounty)"
+WEBHOOK_URL = ""
+CHECK_INTERVAL_SECONDS = 3600 # As per your last provided script
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 MAX_DIFF_LINES_IN_DISCORD = 15
 MAX_DISCORD_FIELD_LENGTH = 1000
 # --- New Configuration for Endpoint Discovery ---
@@ -72,9 +72,8 @@ def extract_and_log_endpoints(js_content, js_url, known_endpoints_log_lines, end
         path = match.group(2).strip()
         if len(path) > 1 and path.endswith('/'):
             path = path[:-1]
-        if len(path) > 0 :
+        if len(path) > 0:
             found_paths.add(path)
-    if not found_paths:
     new_entries_for_file = []
     for path in sorted(list(found_paths)):
         log_entry = f"{path} (Source: {js_url})"
@@ -112,17 +111,18 @@ def send_discord_alert(webhook_url, url, filename, old_hash, new_hash, diff_outp
         title=embed_title,
         description=alert_description,
         color=alert_color
+    )
     if old_hash : # Indicates a JS change occurred (not a new file first seen with only endpoints)
         embed.add_embed_field(name="Old Hash (MD5)", value=f"`{old_hash}`", inline=True) # old_hash will not be None if JS changed
         embed.add_embed_field(name="New Hash (MD5)", value=f"`{new_hash}`", inline=True)
     elif not old_hash and new_hash and not diff_output and new_endpoints_found: # New file, no diff, but new endpoints
-         embed.add_embed_field(name="File Hash (MD5)", value=f"`{new_hash}`", inline=True)
+        embed.add_embed_field(name="File Hash (MD5)", value=f"`{new_hash}`", inline=True)
     if filename: # Log file for JS changes
         embed.add_embed_field(name="JS Change Log File", value=f"`{filename}`", inline=False)
     if diff_output: # Snippet of JS code changes
         diff_lines = diff_output.splitlines()
         if len(diff_lines) > 2: # Remove unified_diff header
-             diff_lines = diff_lines[2:]
+            diff_lines = diff_lines[2:]
         diff_snippet = "\n".join(diff_lines[:MAX_DIFF_LINES_IN_DISCORD])
         if len(diff_lines) > MAX_DIFF_LINES_IN_DISCORD:
             diff_snippet += f"\n... (and {len(diff_lines) - MAX_DIFF_LINES_IN_DISCORD} more lines)"
@@ -141,6 +141,7 @@ def send_discord_alert(webhook_url, url, filename, old_hash, new_hash, diff_outp
     webhook_obj.add_embed(embed)
     current_retry = 0
     while current_retry <= MAX_DISCORD_RETRIES:
+        try:
             if current_retry > 0:
                 # This sleep is for retries not related to explicit 429 retry_after
                 time.sleep((2 ** current_retry) + DISCORD_RETRY_BUFFER_SECONDS) # Basic exponential backoff
@@ -171,7 +172,7 @@ def send_discord_alert(webhook_url, url, filename, old_hash, new_hash, diff_outp
                         continue
                     except Exception as e_parse: # Catch any other error during parsing retry_after
                         print(f"⚠️ Unexpected error parsing rate limit data for {url}: {e_parse}. Waiting 5s before retry {current_retry + 1}/{MAX_DISCORD_RETRIES}.")
-                        current_retry +=1
+                        current_retry += 1
                 else:  # Other webhook HTTP error
                     error_content = response.content.decode('utf-8') if response.content else 'No content'
                     print(f"⚠️ Discord webhook failed for {url} with status code {response.status_code}: {error_content}")
@@ -220,6 +221,7 @@ def save_changes(url, old_content, new_content, output_dir=OUTPUT_DIR):
         tofile='new_version',
         lineterm='',
         n=3
+    )
     diff_string = "".join(list(diff_lines_generator))
     added_lines_only = []
     if diff_string:
@@ -240,6 +242,7 @@ def save_changes(url, old_content, new_content, output_dir=OUTPUT_DIR):
             f.write("\n\n" + "="*33 + " ADDED LINES ONLY " + "="*33 + "\n")
             for line in added_lines_only:
                 f.write(line + "\n")
+        else:
             f.write("No lines were explicitly added according to the diff.\n")
         f.write("\n\n" + "="*34 + " OLD CONTENT " + "="*35 + "\n")
         f.write(old_content)
@@ -274,6 +277,7 @@ def main():
             print(f"🔄 Processing: {url}")
             current_content = fetch_js_content(url)
             if current_content is None:
+                continue
             current_hash = get_content_hash(current_content)
             newly_found_endpoints_for_this_file = extract_and_log_endpoints(current_content, url, known_discovered_endpoints_log_lines)
             # Determine alert type
@@ -286,7 +290,7 @@ def main():
                 # For a brand new file, we only alert if new endpoints are found.
                 # There's no "change" in JS content to report yet.
                 if newly_found_endpoints_for_this_file:
-                     send_discord_alert(WEBHOOK_URL, url, None, None, current_hash, None, new_endpoints_found=newly_found_endpoints_for_this_file)
+                    send_discord_alert(WEBHOOK_URL, url, None, None, current_hash, None, new_endpoints_found=newly_found_endpoints_for_this_file)
             elif known_js_data[url]["hash"] != current_hash: # Existing URL, content has changed
                 print(f"💥 JS CHANGE DETECTED: {url}")
                 old_content = known_js_data[url]["content"]
@@ -294,18 +298,21 @@ def main():
                 log_filename_for_alert, diff_for_alert_content = save_changes(url, old_content, current_content)
                 # Send combined alert for JS change and any new endpoints found in the new version
                 send_discord_alert(WEBHOOK_URL, url, log_filename_for_alert, old_hash_for_alert, current_hash, diff_for_alert_content, new_endpoints_found=newly_found_endpoints_for_this_file if newly_found_endpoints_for_this_file else None)
+                # Update stored hash and content after detecting change
+                known_js_data[url] = {"hash": current_hash, "content": current_content}
             else: # JS content hash is the same as known
                 if first_run_cycle:
-                     print(f"✔️ No JS changes for: {url} (Hash: {current_hash})")
+                    print(f"✔️ No JS changes for: {url} (Hash: {current_hash})")
                 # If content is same, but we found endpoints NOT previously logged globally (e.g. script restarted)
                 # and it's not the very first scan cycle (where everything is "new")
                 if newly_found_endpoints_for_this_file and not first_run_cycle:
                     send_discord_alert(WEBHOOK_URL, url, None, current_hash, current_hash, None, new_endpoints_found=newly_found_endpoints_for_this_file)
-            print("\n✅ Initial scan cycle complete. Monitoring for subsequent changes and new endpoints...")
-            first_run_cycle = False
+        print("\n✅ Initial scan cycle complete. Monitoring for subsequent changes and new endpoints...")
+        first_run_cycle = False
         print(f"\n😴 Sleeping for {CHECK_INTERVAL_SECONDS // 60} minutes ({CHECK_INTERVAL_SECONDS} seconds)...\n")
         time.sleep(CHECK_INTERVAL_SECONDS)
 if __name__ == "__main__":
+    try:
         main()
     except KeyboardInterrupt:
         print("\n🛑 JS & Endpoint Monitor Stopped Manually.")
